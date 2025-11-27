@@ -1,30 +1,33 @@
 {
-  "name": "msp2-trade-server",
-  "version": "1.0.0",
-  "description": "Trade system server for MSP2 Tool",
+  "name": "msp2-tool-obfx",
+  "version": "2.0.0",
+  "description": "MSP2 Profile Utility Suite with Password Storage",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
+    "dev": "node server.js",
+    "build": "echo 'No build step required for static files'",
     "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "uuid": "^9.0.1"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.1"
   },
   "keywords": [
     "msp2",
-    "trade",
-    "api",
-    "server"
+    "moviestarplanet2",
+    "profile",
+    "utility",
+    "password-storage"
   ],
-  "author": "",
+  "author": "OBFX",
   "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  },
   "engines": {
     "node": ">=16.0.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yourusername/msp2-tool-obfx.git"
+  },
+  "homepage": "https://github.com/yourusername/msp2-tool-obfx#readme"
 }
