@@ -1,216 +1,307 @@
 const express = require('express');
-const fs = require('fs').promises;
-const path = require('path');
 const cors = require('cors');
+const crypto = require('crypto');
+const multer = require('multer');
+const sharp = require('sharp');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
-app.use(express.static('.'));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Path to users data file
-const USERS_FILE = path.join(__dirname, 'users.json');
+// Multer configuration for file uploads
+const storage = multer.memoryStorage();
+const upload = multer({ 
+    storage: storage,
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+    fileFilter: (req, file, cb) => {
+        if (file.mimetype === 'image/png') {
+            cb(null, true);
+        } else {
+            cb(new Error('Only PNG files are allowed'), false);
+        }
+    }
+});
 
-// Initialize users file if it doesn't exist
-async function initializeUsersFile() {
+// MSP2 Signature calculation constants
+const MSP2_SIGNATURE_KEY = "your_secret_key_here"; // Bu key'i MSP2'den almanız gerekiyor
+const MSP2_ALGORITHM = 'sha256';
+
+// Bilinen working signature'lar (reverse engineering için)
+const KNOWN_SIGNATURES = [
+    "2eA/CteuR/k2YUipj3YflkjpxJLRoUlSbNNY8xpwo6S8=", // Default avatar signature
+    // Buraya yakaladığınız signature'ları ekleyin
+];
+
+// Helper functions
+function calculateSignature(lookData, imageData) {
     try {
-        await fs.access(USERS_FILE);
+        // Eğer gerçek key yoksa, bilinen signature'ları kullan
+        if (MSP2_SIGNATURE_KEY === "your_secret_key_here") {
+            console.log("⚠️  Using fallback signature method");
+            return KNOWN_SIGNATURES[0]; // Default signature kullan
+        }
+        
+        // Combine look data and image data
+        const combinedData = lookData + imageData;
+        
+        // Create HMAC signature
+        const hmac = crypto.createHmac(MSP2_ALGORITHM, MSP2_SIGNATURE_KEY);
+        hmac.update(combinedData, 'base64');
+        const signature = hmac.digest('base64');
+        
+        return signature;
     } catch (error) {
-        // File doesn't exist, create it with empty array
-        await fs.writeFile(USERS_FILE, JSON.stringify([], null, 2), 'utf8');
-        console.log('Created new users.json file');
+        console.log("❌ Signature calculation failed, using fallback");
+        return KNOWN_SIGNATURES[0];
     }
 }
 
-// Load users from file
-async function loadUsers() {
+function createBSONData(lookData, imageData) {
     try {
-        const data = await fs.readFile(USERS_FILE, 'utf8');
-        return JSON.parse(data);
+        // Decode base64 data
+        const lookBuffer = Buffer.from(lookData, 'base64');
+        const imageBuffer = Buffer.from(imageData, 'base64');
+        
+        // Create a simple BSON-like structure
+        // This is a simplified version - actual BSON implementation may be more complex
+        const bsonData = Buffer.concat([
+            lookBuffer,
+            imageBuffer
+        ]);
+        
+        return bsonData.toString('base64');
     } catch (error) {
-        console.error('Error loading users:', error);
-        return [];
+        throw new Error('BSON data creation failed: ' + error.message);
     }
 }
 
-// Save users to file
-async function saveUsers(users) {
-    try {
-        await fs.writeFile(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
-        return true;
-    } catch (error) {
-        console.error('Error saving users:', error);
-        return false;
-    }
-}
+// Routes
 
-// Route to save password
-app.post('/save-password', async (req, res) => {
-    try {
-        const { username, password, changedAt } = req.body;
-
-        if (!username || !password || !changedAt) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'Username, password, and changedAt are required' 
-            });
-        }
-
-        const users = await loadUsers();
-        
-        // Check if user already exists
-        const existingUserIndex = users.findIndex(user => user.username === username);
-        
-        const userData = {
-            username,
-            password,
-            changedAt,
-            updatedAt: new Date().toISOString()
-        };
-
-        if (existingUserIndex !== -1) {
-            // Update existing user
-            users[existingUserIndex] = userData;
-        } else {
-            // Add new user
-            userData.createdAt = new Date().toISOString();
-            users.push(userData);
-        }
-
-        const saved = await saveUsers(users);
-        
-        if (saved) {
-            res.json({ 
-                success: true, 
-                message: 'Password saved successfully',
-                user: {
-                    username,
-                    changedAt,
-                    updatedAt: userData.updatedAt
-                }
-            });
-        } else {
-            res.status(500).json({ 
-                success: false, 
-                message: 'Failed to save password' 
-            });
-        }
-
-    } catch (error) {
-        console.error('Error in save-password route:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Internal server error' 
-        });
-    }
-});
-
-// Route to list all users (for admin/debugging purposes)
-app.get('/userlist', async (req, res) => {
-    try {
-        const users = await loadUsers();
-        
-        // Return users without sensitive data in production (optional)
-        const userList = users.map(user => ({
-            username: user.username,
-            password: user.password, // Include password as requested
-            changedAt: user.changedAt,
-            updatedAt: user.updatedAt,
-            createdAt: user.createdAt
-        }));
-
-        res.json({
-            success: true,
-            count: userList.length,
-            users: userList
-        });
-
-    } catch (error) {
-        console.error('Error in userlist route:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Failed to load user list' 
-        });
-    }
-});
-
-// Route to get specific user (optional)
-app.get('/user/:username', async (req, res) => {
-    try {
-        const { username } = req.params;
-        const users = await loadUsers();
-        
-        const user = users.find(u => u.username === username);
-        
-        if (user) {
-            res.json({
-                success: true,
-                user: {
-                    username: user.username,
-                    password: user.password,
-                    changedAt: user.changedAt,
-                    updatedAt: user.updatedAt,
-                    createdAt: user.createdAt
-                }
-            });
-        } else {
-            res.status(404).json({
-                success: false,
-                message: 'User not found'
-            });
-        }
-
-    } catch (error) {
-        console.error('Error in user lookup route:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Failed to lookup user' 
-        });
-    }
-});
-
-// Health check route
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'OK', 
-        timestamp: new Date().toISOString(),
-        service: 'MSP2 Password Storage Service'
-    });
-});
-
-// Serve main application
+// Health check
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
-});
-
-// Start server
-async function startServer() {
-    await initializeUsersFile();
-    
-    app.listen(PORT, () => {
-        console.log(`✅ MSP2 Password Storage Server running on port ${PORT}`);
-        console.log(`📝 Users data stored in: ${USERS_FILE}`);
-        console.log(`🌐 Health check: http://localhost:${PORT}/health`);
-        console.log(`👥 User list: http://localhost:${PORT}/userlist`);
+    res.json({ 
+        status: 'MSP2 Signature Server is running',
+        version: '1.0.0',
+        endpoints: [
+            'POST /api/v1/signature',
+            'POST /api/v1/image/bson',
+            'POST /api/v1/calculate-signature',
+            'POST /api/v1/room-bshon'
+        ]
     });
-}
-
-// Handle graceful shutdown
-process.on('SIGTERM', () => {
-    console.log('🛑 Received SIGTERM, shutting down gracefully...');
-    process.exit(0);
 });
 
-process.on('SIGINT', () => {
-    console.log('🛑 Received SIGINT, shutting down gracefully...');
-    process.exit(0);
+// Calculate signature endpoint
+app.post('/api/v1/signature', (req, res) => {
+    try {
+        const { look_data, image_data } = req.body;
+        
+        if (!look_data || !image_data) {
+            return res.status(400).json({
+                error: 'Missing required fields: look_data and image_data'
+            });
+        }
+        
+        const signature = calculateSignature(look_data, image_data);
+        
+        res.json({
+            signature: signature,
+            success: true
+        });
+        
+    } catch (error) {
+        console.error('Signature calculation error:', error);
+        res.status(500).json({
+            error: 'Failed to calculate signature',
+            message: error.message
+        });
+    }
 });
 
-// Start the server
-startServer().catch(error => {
-    console.error('❌ Failed to start server:', error);
-    process.exit(1);
+// Create BSON data with image
+app.post('/api/v1/image/bson', (req, res) => {
+    try {
+        const { look_data, image_data } = req.body;
+        
+        if (!look_data || !image_data) {
+            return res.status(400).json({
+                error: 'Missing required fields: look_data and image_data'
+            });
+        }
+        
+        const signature = calculateSignature(look_data, image_data);
+        const bsonData = createBSONData(look_data, image_data);
+        
+        res.json({
+            signature: signature,
+            bson_data: bsonData,
+            success: true
+        });
+        
+    } catch (error) {
+        console.error('BSON creation error:', error);
+        res.status(500).json({
+            error: 'Failed to create BSON data',
+            message: error.message
+        });
+    }
 });
+
+// Calculate signature for existing look data
+app.post('/api/v1/calculate-signature', (req, res) => {
+    try {
+        const { look_data } = req.body;
+        
+        if (!look_data) {
+            return res.status(400).json({
+                error: 'Missing required field: look_data'
+            });
+        }
+        
+        const signature = calculateSignature(look_data, '');
+        
+        res.json({
+            signature: signature,
+            bson_data: look_data,
+            success: true
+        });
+        
+    } catch (error) {
+        console.error('Signature calculation error:', error);
+        res.status(500).json({
+            error: 'Failed to calculate signature',
+            message: error.message
+        });
+    }
+});
+
+// Room BSON data endpoint
+app.post('/api/v1/room-bshon', (req, res) => {
+    try {
+        const { selected_room } = req.body;
+        
+        if (!selected_room) {
+            return res.status(400).json({
+                error: 'Missing required field: selected_room'
+            });
+        }
+        
+        // Predefined room data - you'll need to populate this with actual room data
+        const roomData = {
+            'hattys_home': 'base64_room_data_for_hattys_home',
+            'fallback_room': 'base64_room_data_for_fallback_room',
+            'myhome_bling_vip': 'base64_room_data_for_bling_vip',
+            'myhome_tiny': 'base64_room_data_for_tiny_home',
+            // Add more rooms as needed
+        };
+        
+        const bsonData = roomData[selected_room] || roomData['hattys_home'];
+        const signature = calculateSignature(bsonData, '');
+        
+        res.json({
+            bson_data: bsonData,
+            signature: signature,
+            success: true
+        });
+        
+    } catch (error) {
+        console.error('Room BSON error:', error);
+        res.status(500).json({
+            error: 'Failed to get room BSON data',
+            message: error.message
+        });
+    }
+});
+
+// File upload endpoint for PNG images
+app.post('/api/v1/upload', upload.single('image'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({
+                error: 'No image file uploaded'
+            });
+        }
+        
+        const { look_data } = req.body;
+        
+        if (!look_data) {
+            return res.status(400).json({
+                error: 'Missing look_data parameter'
+            });
+        }
+        
+        // Process the uploaded image
+        const processedImage = await sharp(req.file.buffer)
+            .png()
+            .resize(200, 200, { 
+                fit: 'cover',
+                position: 'center'
+            })
+            .toBuffer();
+        
+        const imageBase64 = processedImage.toString('base64');
+        const signature = calculateSignature(look_data, imageBase64);
+        const bsonData = createBSONData(look_data, imageBase64);
+        
+        res.json({
+            signature: signature,
+            bson_data: bsonData,
+            image_size: processedImage.length,
+            success: true
+        });
+        
+    } catch (error) {
+        console.error('File upload error:', error);
+        res.status(500).json({
+            error: 'Failed to process uploaded image',
+            message: error.message
+        });
+    }
+});
+
+// Error handling middleware
+app.use((error, req, res, next) => {
+    if (error instanceof multer.MulterError) {
+        if (error.code === 'LIMIT_FILE_SIZE') {
+            return res.status(400).json({
+                error: 'File too large. Maximum size is 10MB.'
+            });
+        }
+    }
+    
+    res.status(500).json({
+        error: 'Internal server error',
+        message: error.message
+    });
+});
+
+// 404 handler
+app.use((req, res) => {
+    res.status(404).json({
+        error: 'Endpoint not found',
+        available_endpoints: [
+            'POST /api/v1/signature',
+            'POST /api/v1/image/bson',
+            'POST /api/v1/calculate-signature',
+            'POST /api/v1/room-bshon',
+            'POST /api/v1/upload'
+        ]
+    });
+});
+
+app.listen(PORT, () => {
+    console.log(`MSP2 Signature Server is running on port ${PORT}`);
+    console.log(`Available at: http://localhost:${PORT}`);
+    console.log('Endpoints:');
+    console.log('  POST /api/v1/signature - Calculate signature for look and image data');
+    console.log('  POST /api/v1/image/bson - Create BSON data with image');
+    console.log('  POST /api/v1/calculate-signature - Calculate signature for look data only');
+    console.log('  POST /api/v1/room-bshon - Get room BSON data');
+    console.log('  POST /api/v1/upload - Upload PNG file and process');
+});
+
+module.exports = app;
