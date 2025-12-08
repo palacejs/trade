@@ -1,33 +1,29 @@
 {
-  "name": "msp2-tool-obfx",
-  "version": "2.0.0",
-  "description": "MSP2 Profile Utility Suite with Password Storage",
+  "name": "msp2-signature-server",
+  "version": "1.0.0",
+  "description": "MSP2 Signature calculation server for custom profile images",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js",
-    "build": "echo 'No build step required for static files'",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "nodemon server.js"
   },
   "keywords": [
     "msp2",
-    "moviestarplanet2",
+    "signature",
     "profile",
-    "utility",
-    "password-storage"
+    "image",
+    "server"
   ],
-  "author": "OBFX",
-  "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "multer": "^1.4.5",
+    "sharp": "^0.33.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
   },
   "engines": {
     "node": ">=16.0.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/yourusername/msp2-tool-obfx.git"
-  },
-  "homepage": "https://github.com/yourusername/msp2-tool-obfx#readme"
+  }
 }
