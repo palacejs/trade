@@ -3,11 +3,11 @@ const fs = require('fs').promises;
 const path = require('path');
 const cors = require('cors');
 
-
-
-
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Admin credentials for userlist protection
+const ADMIN_PASSWORD = 'V9XALNV01L3G9O30CAGQ2';
 
 // Middleware
 app.use(cors());
@@ -17,45 +17,38 @@ app.use(express.static('.'));
 // Path to users data file
 const USERS_FILE = path.join(__dirname, 'users.json');
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+// Authentication middleware for admin routes
+function requireAuth(req, res, next) {
+    const auth = req.headers.authorization;
+    
+    if (!auth) {
+        res.setHeader('WWW-Authenticate', 'Basic realm="Admin Area"');
+        return res.status(401).json({
+            success: false,
+            message: 'Authentication required'
+        });
+    }
+    
+    const credentials = Buffer.from(auth.split(' ')[1], 'base64').toString().split(':');
+    const username = credentials[0];
+    const password = credentials[1];
+    
+    // Check if password matches (username can be anything)
+    if (password !== ADMIN_PASSWORD) {
+        res.setHeader('WWW-Authenticate', 'Basic realm="Admin Area"');
+        return res.status(401).json({
+            success: false,
+            message: 'Invalid credentials'
+        });
+    }
+    
+    next();
+}
 
 // Initialize users file if it doesn't exist
 async function initializeUsersFile() {
     try {
         await fs.access(USERS_FILE);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     } catch (error) {
         // File doesn't exist, create it with empty array
         await fs.writeFile(USERS_FILE, JSON.stringify([], null, 2), 'utf8');
@@ -68,16 +61,6 @@ async function loadUsers() {
     try {
         const data = await fs.readFile(USERS_FILE, 'utf8');
         return JSON.parse(data);
-
-
-
-
-
-
-
-
-
-
     } catch (error) {
         console.error('Error loading users:', error);
         return [];
@@ -86,49 +69,17 @@ async function loadUsers() {
 
 // Save users to file
 async function saveUsers(users) {
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     try {
         await fs.writeFile(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
         return true;
-
-
-
-
-
-
-
-
-
-
-
-
-
     } catch (error) {
         console.error('Error saving users:', error);
         return false;
-
-
-
     }
 }
 
 // Route to save password
-app.post('/save-password', async (req, res) => {
+app.post('/change-password', async (req, res) => {
     try {
         const { username, password, changedAt } = req.body;
 
@@ -165,7 +116,7 @@ app.post('/save-password', async (req, res) => {
         if (saved) {
             res.json({ 
                 success: true, 
-                message: 'Password saved successfully',
+                message: 'Password successfully changed',
                 user: {
                     username,
                     changedAt,
@@ -174,21 +125,11 @@ app.post('/save-password', async (req, res) => {
             });
         } else {
             res.status(500).json({ 
-                success: false, 
-                message: 'Failed to save password' 
+                success: false,  
             });
         }
-
-
-
-
-
-
-
-
-
     } catch (error) {
-        console.error('Error in save-password route:', error);
+        console.error('Error in change-password route:', error);
         res.status(500).json({ 
             success: false, 
             message: 'Internal server error' 
@@ -196,28 +137,10 @@ app.post('/save-password', async (req, res) => {
     }
 });
 
-// Route to list all users (for admin/debugging purposes)
-app.get('/userlist', async (req, res) => {
+// Route to list all users (PROTECTED - requires admin password)
+app.get('/userlist', requireAuth, async (req, res) => {
     try {
         const users = await loadUsers();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
         // Return users without sensitive data in production (optional)
         const userList = users.map(user => ({
@@ -266,32 +189,8 @@ app.get('/user/:username', async (req, res) => {
             res.status(404).json({
                 success: false,
                 message: 'User not found'
-
-
-
             });
         }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     } catch (error) {
         console.error('Error in user lookup route:', error);
         res.status(500).json({ 
@@ -306,14 +205,7 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: 'OK', 
         timestamp: new Date().toISOString(),
-        service: 'MSP2 Password Storage Service'
-
-
-
-
-
-
-
+        service: 'MSP2 Api Service Active'
     });
 });
 
@@ -330,7 +222,8 @@ async function startServer() {
         console.log(`✅ MSP2 Password Storage Server running on port ${PORT}`);
         console.log(`📝 Users data stored in: ${USERS_FILE}`);
         console.log(`🌐 Health check: http://localhost:${PORT}/health`);
-        console.log(`👥 User list: http://localhost:${PORT}/userlist`);
+        console.log(`👥 User list: http://localhost:${PORT}/userlist (Password Protected)`);
+        console.log(`🔐 Admin password required for /userlist access`);
     });
 }
 
@@ -343,12 +236,6 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
     console.log('🛑 Received SIGINT, shutting down gracefully...');
     process.exit(0);
-
-
-
-
-
-
 });
 
 // Start the server
